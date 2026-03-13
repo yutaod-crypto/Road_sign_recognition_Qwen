@@ -9,6 +9,7 @@ OUT_JSONL = Path("artifacts/gtsrb_test_120.jsonl")
 
 SAMPLE_SIZE = 120
 SEED = 42
+PER_CLASS = SAMPLE_SIZE // 6  # 20 per class
 
 GROUP_MAP = {
     "speed_limit": {0,1,2,3,4,5,6,7,8,32,41,42},
@@ -41,8 +42,20 @@ with open(CSV_PATH) as f:
 
 print("Total images:", len(rows))
 
+# Stratified sampling: 20 per class
 random.seed(SEED)
-sample = random.sample(rows, SAMPLE_SIZE)
+by_class = {}
+for r in rows:
+    by_class.setdefault(r["label"], []).append(r)
+
+sample = []
+for label in sorted(by_class.keys()):
+    pool = by_class[label]
+    n = min(PER_CLASS, len(pool))
+    sample.extend(random.sample(pool, n))
+    print(f"  {label}: sampled {n} from {len(pool)}")
+
+random.shuffle(sample)
 
 OUT_JSONL.parent.mkdir(exist_ok=True)
 
@@ -50,4 +63,4 @@ with open(OUT_JSONL,"w") as f:
     for r in sample:
         f.write(json.dumps(r) + "\n")
 
-print("Saved", SAMPLE_SIZE, "samples →", OUT_JSONL)
+print(f"Saved {len(sample)} samples -> {OUT_JSONL}")

@@ -7,7 +7,14 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 from peft import PeftModel
-from transformers import AutoProcessor, BitsAndBytesConfig, Qwen3VLForConditionalGeneration
+from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+
+try:
+    from transformers import BitsAndBytesConfig
+    import bitsandbytes as _bnb
+    HAS_BNB = True
+except ImportError:
+    HAS_BNB = False
 
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 LABELS = ["speed_limit", "stop", "yield", "no_entry", "warning", "direction"]
@@ -31,26 +38,43 @@ def main():
     ap.add_argument("--adapter_dir", default="artifacts/gtsrb_qwen3vl_qlora")
     ap.add_argument("--max_image_side", type=int, default=384)
     ap.add_argument("--max_new_tokens", type=int, default=24)
+    ap.add_argument("--force_fp16", action="store_true",
+                    help="Skip 4-bit quantization, use fp16 instead")
     args = ap.parse_args()
 
     rows = [json.loads(line) for line in Path(args.eval_jsonl).read_text(encoding="utf-8").splitlines() if line.strip()]
+    print(f"Loaded {len(rows)} test examples from {args.eval_jsonl}")
 
     processor = AutoProcessor.from_pretrained(args.base_model)
 
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.float16,
-    )
+    use_bnb = HAS_BNB and not args.force_fp16
 
-    base = Qwen3VLForConditionalGeneration.from_pretrained(
-        args.base_model,
-        device_map="auto",
-        torch_dtype="auto",
-        quantization_config=bnb_config,
-    )
+    if use_bnb:
+        print("Loading base model with 4-bit quantization ...")
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        base = Qwen3VLForConditionalGeneration.from_pretrained(
+            args.base_model,
+            device_map="auto",
+            torch_dtype="auto",
+            quantization_config=bnb_config,
+        )
+    else:
+        if not args.force_fp16:
+            print("bitsandbytes not available, falling back to fp16 ...")
+        else:
+            print("Using fp16 mode (--force_fp16) ...")
+        base = Qwen3VLForConditionalGeneration.from_pretrained(
+            args.base_model,
+            device_map="auto",
+            torch_dtype=torch.float16,
+        )
 
+    print(f"Loading LoRA adapter from {args.adapter_dir} ...")
     model = PeftModel.from_pretrained(base, args.adapter_dir)
     model.eval()
 

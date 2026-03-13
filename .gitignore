@@ -1,0 +1,22 @@
+# Datasets (too large for git)
+datasets/gtsrb/test_images/
+datasets/gtsrb/train/
+datasets/gtsrb/GT-final_test.csv
+
+# Artifacts (generated outputs)
+artifacts/
+
+# LaTeX build files
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.synctex.gz
+
+# LoRA checkpoints
+checkpoints/
+
+# Python
+__pycache__/
+*.pyc

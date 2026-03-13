@@ -1,27 +1,35 @@
 # 01_run_gtsrb_qwen3vl.py
 #
-# Fast baseline inference for GTSRB grouped traffic-sign classification
-# using Qwen3-VL-2B in 4-bit on a Windows machine with an RTX 4060.
+# Baseline inference for GTSRB grouped traffic-sign classification
+# using Qwen3-VL-2B on a Windows machine with an RTX 4060.
 #
-# Expected input JSONL format:
-# {"image":"...absolute_or_relative_path_to_.ppm_or_other_image...","label":"stop","class_id":14}
+# Supports both 4-bit quantization (Linux/WSL) and fp16 (Windows native).
+# Auto-detects bitsandbytes availability.
 #
-# Example usage (Windows CMD, single line):
-# set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-# python 01_run_gtsrb_qwen3vl.py --eval_jsonl artifacts/gtsrb_test_120.jsonl --out_preds artifacts/gtsrb_preds_120.jsonl
+# Usage:
+#   python 01_run_gtsrb_qwen3vl.py --eval_jsonl artifacts/gtsrb_test_120.jsonl --out_preds artifacts/gtsrb_preds_baseline.jsonl
 #
 # Then evaluate with:
-# python 02_eval_gtsrb.py --preds_jsonl artifacts/gtsrb_preds_120.jsonl
+#   python 02_eval_gtsrb.py --preds_jsonl artifacts/gtsrb_preds_baseline.jsonl
 
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 import torch
 from PIL import Image
 from tqdm import tqdm
-from transformers import AutoProcessor, BitsAndBytesConfig, Qwen3VLForConditionalGeneration
+from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+
+# Try importing bitsandbytes; if unavailable, fall back to fp16
+try:
+    from transformers import BitsAndBytesConfig
+    import bitsandbytes as _bnb
+    HAS_BNB = True
+except ImportError:
+    HAS_BNB = False
 
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 LABELS = ["speed_limit", "stop", "yield", "no_entry", "warning", "direction"]
@@ -43,10 +51,12 @@ def extract_json(text: str):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--eval_jsonl", default="artifacts/gtsrb_test_120.jsonl")
-    ap.add_argument("--out_preds", default="artifacts/gtsrb_preds_120.jsonl")
+    ap.add_argument("--out_preds", default="artifacts/gtsrb_preds_baseline.jsonl")
     ap.add_argument("--model_id", default="Qwen/Qwen3-VL-2B-Instruct")
-    ap.add_argument("--max_image_side", type=int, default=256)   # reduced for speed
-    ap.add_argument("--max_new_tokens", type=int, default=16)    # reduced for speed
+    ap.add_argument("--max_image_side", type=int, default=168)
+    ap.add_argument("--max_new_tokens", type=int, default=16)
+    ap.add_argument("--force_fp16", action="store_true",
+                    help="Skip 4-bit quantization, use fp16 instead")
     args = ap.parse_args()
 
     rows = [
@@ -54,32 +64,62 @@ def main():
         for line in Path(args.eval_jsonl).read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    print(f"Loaded {len(rows)} test examples from {args.eval_jsonl}")
 
-    processor = AutoProcessor.from_pretrained(args.model_id)
-
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.float16,
-    )
-
-    model = Qwen3VLForConditionalGeneration.from_pretrained(
+    # Limit Qwen3-VL vision token count to speed up inference
+    processor = AutoProcessor.from_pretrained(
         args.model_id,
-        device_map="auto",
-        torch_dtype="auto",
-        quantization_config=bnb_config,
+        min_pixels=28 * 28,
+        max_pixels=168 * 168,
     )
+
+    use_bnb = HAS_BNB and not args.force_fp16
+
+    if use_bnb:
+        print("Loading model with 4-bit quantization (bitsandbytes) ...")
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        model = Qwen3VLForConditionalGeneration.from_pretrained(
+            args.model_id,
+            device_map="cuda:0",
+            torch_dtype="auto",
+            quantization_config=bnb_config,
+        )
+    else:
+        if not args.force_fp16:
+            print("bitsandbytes not available, falling back to fp16 ...")
+        else:
+            print("Using fp16 mode (--force_fp16) ...")
+        model = Qwen3VLForConditionalGeneration.from_pretrained(
+            args.model_id,
+            device_map="cuda:0",
+            torch_dtype=torch.float16,
+        )
+
     model.eval()
+
+    # Check device placement
+    total_params = sum(p.numel() for p in model.parameters())
+    cuda_params = sum(p.numel() for p in model.parameters() if p.is_cuda)
+    cpu_params = total_params - cuda_params
+    print(f"Model params: {total_params/1e6:.0f}M total, {cuda_params/1e6:.0f}M on GPU, {cpu_params/1e6:.0f}M on CPU")
+    if cpu_params > 0:
+        print("WARNING: Some params on CPU, inference will be slow!")
+
+    if torch.cuda.is_available():
+        mem_alloc = torch.cuda.memory_allocated() / 1024**3
+        mem_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        print(f"GPU memory: {mem_alloc:.1f}GB used / {mem_total:.1f}GB total")
 
     out_path = Path(args.out_preds)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(out_path, "w", encoding="utf-8") as f_out:
         for ex in tqdm(rows):
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
             image_path = ex["image"]
             gt_label = ex["label"]
 
@@ -126,12 +166,11 @@ def main():
                 if hasattr(v, "to"):
                     inputs[k] = v.to(model.device)
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 gen_ids = model.generate(
                     **inputs,
                     max_new_tokens=args.max_new_tokens,
                     do_sample=False,
-                    temperature=0.0,
                     use_cache=True,
                 )
 
