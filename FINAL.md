@@ -6,4 +6,4 @@
 - 在此根目录新增 Final 脚本时，建议与 milestone 相同惯例：  
   `REPO_ROOT = Path(__file__).resolve().parent`（根目录下的 `.py` 文件用 **`.parent`**，不要用 `parent.parent`）。
 
-执行计划与步骤清单见上级目录：`intro2dl-proj/FINAL_PROJECT_EXECUTION_PLAN.md`。
+执行计划与步骤清单见同目录：**`FINAL_PROJECT_EXECUTION_PLAN.md`**。
