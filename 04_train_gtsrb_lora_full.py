@@ -14,6 +14,7 @@ from transformers import (
     TrainingArguments,
     Trainer,
 )
+from transformers.trainer_utils import get_last_checkpoint
 
 LABELS = ["speed_limit", "stop", "yield", "no_entry", "warning", "direction"]
 
@@ -132,26 +133,44 @@ class GTSRBCollator:
 
 def parse_args():
     p = argparse.ArgumentParser(description="Full GTSRB LoRA fine-tuning for Qwen3-VL")
-    p.add_argument("--per_device_train_batch_size", type=int, default=2)
-    p.add_argument("--per_device_eval_batch_size", type=int, default=2)
-    p.add_argument("--gradient_accumulation_steps", type=int, default=1)
+    p.add_argument(
+        "--per_device_train_batch_size",
+        type=int,
+        default=1,
+        help="must stay 1: each image yields different Qwen3-VL patch counts; cannot stack a micro-batch in this collator",
+    )
+    p.add_argument("--per_device_eval_batch_size", type=int, default=1)
+    p.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=-1,
+        help="default auto: 1 if WORLD_SIZE>1 else 2 (keeps ~2 samples per optimizer step vs original1-GPU recipe)",
+    )
     p.add_argument("--num_train_epochs", type=int, default=2)
     p.add_argument("--bf16", action="store_true", help="train in bf16 (faster on H100/H200)")
     p.add_argument("--fp16", action="store_true", help="force fp16 even if bf16 is available")
-    p.add_argument("--dataloader_num_workers", type=int, default=4)
+    p.add_argument("--dataloader_num_workers", type=int, default=0)
     p.add_argument("--no_gradient_checkpointing", action="store_true", help="disable checkpointing for speed if VRAM allows")
     return p.parse_args()
 
 
 def main():
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+
     args = parse_args()
+    if args.gradient_accumulation_steps < 0:
+        args.gradient_accumulation_steps = 1 if world_size > 1 else 2
+    if args.per_device_train_batch_size != 1 or args.per_device_eval_batch_size != 1:
+        raise ValueError(
+            "per_device_*_batch_size must be 1 for this multimodal collator (variable vision tokens per image). "
+            "Speed up with more GPUs (torchrun DDP) or bf16/TF32, not larger micro-batch."
+        )
+
     train_jsonl = "artifacts/gtsrb_train_full.jsonl"
     val_jsonl = "artifacts/gtsrb_val_full.jsonl"
     out_dir = "artifacts/gtsrb_qwen3vl_lora_full"
     model_id = "Qwen/Qwen3-VL-2B-Instruct"
-
-    world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
     if world_size > 1:
         if local_rank < 0:
             raise RuntimeError("Multi-GPU requires torchrun (LOCAL_RANK not set).")
@@ -193,7 +212,7 @@ def main():
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
-    training_args = TrainingArguments(
+    ta_kwargs: Dict[str, Any] = dict(
         output_dir=out_dir,
         num_train_epochs=args.num_train_epochs,
         per_device_train_batch_size=args.per_device_train_batch_size,
@@ -209,9 +228,12 @@ def main():
         dataloader_pin_memory=True,
         report_to="none",
         remove_unused_columns=False,
-        ddp_find_unused_parameters=False,
-        ddp_backend="nccl",
     )
+    #仅多进程 DDP 时设置，否则 accelerate 会走分布式分支导致单卡报错
+    if world_size > 1:
+        ta_kwargs["ddp_find_unused_parameters"] = False
+        ta_kwargs["ddp_backend"] = "nccl"
+    training_args = TrainingArguments(**ta_kwargs)
 
     collator = GTSRBCollator(
         processor=processor,
@@ -227,8 +249,12 @@ def main():
         data_collator=collator,
     )
 
-    print("Starting training...")
-    trainer.train()
+    resume_ckpt = get_last_checkpoint(out_dir)
+    if resume_ckpt:
+        print(f"Resuming from checkpoint: {resume_ckpt}")
+    else:
+        print("Starting training from scratch...")
+    trainer.train(resume_from_checkpoint=resume_ckpt)
     trainer.save_model(out_dir)
     processor.save_pretrained(out_dir)
 
