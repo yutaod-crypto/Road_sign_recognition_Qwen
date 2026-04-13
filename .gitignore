@@ -20,3 +20,6 @@ checkpoints/
 # Python
 __pycache__/
 *.pyc
+
+# Virtual environment
+.venv/

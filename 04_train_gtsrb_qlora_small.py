@@ -32,6 +32,7 @@ class GTSRBCollator:
         labels_list = []
         pixel_values_list = []
         image_grid_thw_list = []
+        mm_tok_list = []
 
         for ex in batch:
             img = Image.open(ex["image"]).convert("RGB")
@@ -80,16 +81,27 @@ class GTSRBCollator:
             labels = torch.full_like(input_ids, -100)
             labels[:, prompt_inputs["input_ids"].shape[-1]:] = target_inputs["input_ids"]
 
+            prompt_mm = prompt_inputs["mm_token_type_ids"]
+            tgt_len = target_inputs["input_ids"].shape[-1]
+            target_mm = torch.zeros(
+                (1, tgt_len),
+                dtype=prompt_mm.dtype,
+                device=prompt_mm.device,
+            )
+            mm_token_type_ids = torch.cat([prompt_mm, target_mm], dim=-1)
+
             if input_ids.shape[-1] > self.max_length:
                 input_ids = input_ids[:, -self.max_length:]
                 attention_mask = attention_mask[:, -self.max_length:]
                 labels = labels[:, -self.max_length:]
+                mm_token_type_ids = mm_token_type_ids[:, -self.max_length:]
 
             input_ids_list.append(input_ids.squeeze(0))
             attn_list.append(attention_mask.squeeze(0))
             labels_list.append(labels.squeeze(0))
             pixel_values_list.append(prompt_inputs["pixel_values"].squeeze(0))
             image_grid_thw_list.append(prompt_inputs["image_grid_thw"].squeeze(0))
+            mm_tok_list.append(mm_token_type_ids.squeeze(0))
 
         max_len = max(x.shape[-1] for x in input_ids_list)
 
@@ -104,6 +116,7 @@ class GTSRBCollator:
         input_ids = torch.stack([pad1d(x, pad_id) for x in input_ids_list])
         attention_mask = torch.stack([pad1d(x, 0) for x in attn_list])
         labels = torch.stack([pad1d(x, -100) for x in labels_list])
+        mm_token_type_ids = torch.stack([pad1d(x, 0) for x in mm_tok_list])
 
         pixel_values = torch.stack(pixel_values_list)
         image_grid_thw = torch.stack(image_grid_thw_list)
@@ -113,6 +126,7 @@ class GTSRBCollator:
             "attention_mask": attention_mask,
             "pixel_values": pixel_values,
             "image_grid_thw": image_grid_thw,
+            "mm_token_type_ids": mm_token_type_ids,
             "labels": labels,
         }
 

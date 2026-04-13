@@ -1,4 +1,6 @@
+import argparse
 import json
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -30,6 +32,7 @@ class GTSRBCollator:
         labels_list = []
         pixel_values_list = []
         image_grid_thw_list = []
+        mm_tok_list = []
 
         for ex in batch:
             img = Image.open(ex["image"]).convert("RGB")
@@ -78,16 +81,27 @@ class GTSRBCollator:
             labels = torch.full_like(input_ids, -100)
             labels[:, prompt_inputs["input_ids"].shape[-1]:] = target_inputs["input_ids"]
 
+            prompt_mm = prompt_inputs["mm_token_type_ids"]
+            tgt_len = target_inputs["input_ids"].shape[-1]
+            target_mm = torch.zeros(
+                (1, tgt_len),
+                dtype=prompt_mm.dtype,
+                device=prompt_mm.device,
+            )
+            mm_token_type_ids = torch.cat([prompt_mm, target_mm], dim=-1)
+
             if input_ids.shape[-1] > self.max_length:
                 input_ids = input_ids[:, -self.max_length:]
                 attention_mask = attention_mask[:, -self.max_length:]
                 labels = labels[:, -self.max_length:]
+                mm_token_type_ids = mm_token_type_ids[:, -self.max_length:]
 
             input_ids_list.append(input_ids.squeeze(0))
             attn_list.append(attention_mask.squeeze(0))
             labels_list.append(labels.squeeze(0))
             pixel_values_list.append(prompt_inputs["pixel_values"].squeeze(0))
             image_grid_thw_list.append(prompt_inputs["image_grid_thw"].squeeze(0))
+            mm_tok_list.append(mm_token_type_ids.squeeze(0))
 
         max_len = max(x.shape[-1] for x in input_ids_list)
 
@@ -102,6 +116,7 @@ class GTSRBCollator:
         input_ids = torch.stack([pad1d(x, pad_id) for x in input_ids_list])
         attention_mask = torch.stack([pad1d(x, 0) for x in attn_list])
         labels = torch.stack([pad1d(x, -100) for x in labels_list])
+        mm_token_type_ids = torch.stack([pad1d(x, 0) for x in mm_tok_list])
         pixel_values = torch.stack(pixel_values_list)
         image_grid_thw = torch.stack(image_grid_thw_list)
 
@@ -110,15 +125,43 @@ class GTSRBCollator:
             "attention_mask": attention_mask,
             "pixel_values": pixel_values,
             "image_grid_thw": image_grid_thw,
+            "mm_token_type_ids": mm_token_type_ids,
             "labels": labels,
         }
 
 
+def parse_args():
+    p = argparse.ArgumentParser(description="Full GTSRB LoRA fine-tuning for Qwen3-VL")
+    p.add_argument("--per_device_train_batch_size", type=int, default=2)
+    p.add_argument("--per_device_eval_batch_size", type=int, default=2)
+    p.add_argument("--gradient_accumulation_steps", type=int, default=1)
+    p.add_argument("--num_train_epochs", type=int, default=2)
+    p.add_argument("--bf16", action="store_true", help="train in bf16 (faster on H100/H200)")
+    p.add_argument("--fp16", action="store_true", help="force fp16 even if bf16 is available")
+    p.add_argument("--dataloader_num_workers", type=int, default=4)
+    p.add_argument("--no_gradient_checkpointing", action="store_true", help="disable checkpointing for speed if VRAM allows")
+    return p.parse_args()
+
+
 def main():
+    args = parse_args()
     train_jsonl = "artifacts/gtsrb_train_full.jsonl"
     val_jsonl = "artifacts/gtsrb_val_full.jsonl"
     out_dir = "artifacts/gtsrb_qwen3vl_lora_full"
     model_id = "Qwen/Qwen3-VL-2B-Instruct"
+
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+    if world_size > 1:
+        if local_rank < 0:
+            raise RuntimeError("Multi-GPU requires torchrun (LOCAL_RANK not set).")
+        torch.cuda.set_device(local_rank)
+
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
+    use_bf16 = args.bf16 or (not args.fp16 and torch.cuda.is_bf16_supported())
+    torch_dtype = torch.bfloat16 if use_bf16 else torch.float16
 
     print("Loading dataset...")
     ds = load_dataset("json", data_files={"train": train_jsonl, "val": val_jsonl})
@@ -126,14 +169,16 @@ def main():
     print("Loading processor...")
     processor = AutoProcessor.from_pretrained(model_id)
 
-    print("Loading model...")
-    model = Qwen3VLForConditionalGeneration.from_pretrained(
-        model_id,
-        torch_dtype=torch.float16,
-        device_map="auto",
-    )
+    print(f"Loading model... (world_size={world_size}, dtype={torch_dtype})")
+    load_kw: Dict[str, Any] = {"torch_dtype": torch_dtype}
+    if world_size <= 1:
+        load_kw["device_map"] = "auto"
+    model = Qwen3VLForConditionalGeneration.from_pretrained(model_id, **load_kw)
+    if world_size > 1:
+        model = model.to(torch.device(f"cuda:{local_rank}"))
 
-    model.gradient_checkpointing_enable()
+    if not args.no_gradient_checkpointing:
+        model.gradient_checkpointing_enable()
     model.config.use_cache = False
 
     lora_config = LoraConfig(
@@ -150,18 +195,22 @@ def main():
 
     training_args = TrainingArguments(
         output_dir=out_dir,
-        num_train_epochs=2,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=2,
+        num_train_epochs=args.num_train_epochs,
+        per_device_train_batch_size=args.per_device_train_batch_size,
+        per_device_eval_batch_size=args.per_device_eval_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=1e-4,
         logging_steps=10,
         save_steps=200,
         save_total_limit=2,
-        fp16=True,
-        bf16=False,
-        dataloader_num_workers=0,
+        fp16=not use_bf16,
+        bf16=use_bf16,
+        dataloader_num_workers=args.dataloader_num_workers,
+        dataloader_pin_memory=True,
         report_to="none",
         remove_unused_columns=False,
+        ddp_find_unused_parameters=False,
+        ddp_backend="nccl",
     )
 
     collator = GTSRBCollator(
