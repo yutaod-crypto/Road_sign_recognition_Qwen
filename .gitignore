@@ -1,25 +1,74 @@
-# Datasets (too large for git)
-datasets/gtsrb/test_images/
-datasets/gtsrb/train/
-datasets/gtsrb/GT-final_test.csv
+# --- Local data & archives (not versioned) ---
+datasets/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
 
-# Artifacts (generated outputs)
+# --- Generated runs, checkpoints, logs ---
 artifacts/
+checkpoints/
+outputs/
+runs/
+wandb/
+mlruns/
+lightning_logs/
+*.log
 
-# LaTeX build files
+# --- Large / downloaded model weights (local only) ---
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.safetensors
+models/
+.cache/
+hf_cache/
+huggingface/
+
+# --- Local experiment notes (regenerate after runs) ---
+RUN_RESULTS.md
+
+# --- Secrets & local env ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- OS & editors ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.code-workspace
+
+# --- LaTeX build files ---
 *.aux
 *.bbl
 *.blg
-*.log
 *.out
 *.synctex.gz
-
-# LoRA checkpoints
-checkpoints/
-
-# Python
-__pycache__/
-*.pyc
-
-# Virtual environment
-.venv/
