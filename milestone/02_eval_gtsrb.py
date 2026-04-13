@@ -5,12 +5,13 @@ from pathlib import Path
 
 import pandas as pd
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 LABELS = ["speed_limit", "stop", "yield", "no_entry", "warning", "direction"]
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--preds_jsonl", default="artifacts/gtsrb_preds_baseline.jsonl")
-    ap.add_argument("--out_confusion_csv", default="artifacts/gtsrb_confusion.csv")
+    ap.add_argument("--preds_jsonl", default=str(REPO_ROOT / "artifacts/gtsrb_preds_baseline.jsonl"))
+    ap.add_argument("--out_confusion_csv", default=str(REPO_ROOT / "artifacts/gtsrb_confusion.csv"))
     args = ap.parse_args()
 
     rows = [json.loads(line) for line in Path(args.preds_jsonl).read_text(encoding="utf-8").splitlines() if line.strip()]

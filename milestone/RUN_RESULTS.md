@@ -23,7 +23,7 @@
 - 与脚本期望的布局对齐：
   - `datasets/gtsrb/train` → 软链到 `GTSRB/Training`
   - `datasets/gtsrb/test_images` → 软链到 `GTSRB/Final_Test/Images`
-- 测试列表：`python 00_prepare_gtsrb_grouped.py` → `artifacts/gtsrb_test_120.jsonl`
+- 测试列表：`python milestone/00_prepare_gtsrb_grouped.py` → `artifacts/gtsrb_test_120.jsonl`
 
 ---
 
@@ -47,25 +47,25 @@ cd /sgl-workspace/intro2dl-proj/Road_sign_recognition_Qwen
 source .venv/bin/activate
 export CUDA_VISIBLE_DEVICES=1
 
-python 00_prepare_gtsrb_grouped.py
+python milestone/00_prepare_gtsrb_grouped.py
 
-python 01_run_gtsrb_qwen3vl.py \
+python milestone/01_run_gtsrb_qwen3vl.py \
   --eval_jsonl artifacts/gtsrb_test_120.jsonl \
   --out_preds artifacts/gtsrb_preds_baseline.jsonl
 
-python 02_eval_gtsrb.py \
+python milestone/02_eval_gtsrb.py \
   --preds_jsonl artifacts/gtsrb_preds_baseline.jsonl \
   --out_confusion_csv artifacts/gtsrb_confusion_baseline.csv
 
-python 03_prepare_gtsrb_train_small.py
-python 04_train_gtsrb_qlora_small.py
+python milestone/03_prepare_gtsrb_train_small.py
+python milestone/04_train_gtsrb_qlora_small.py
 
-python 05_run_gtsrb_qwen3vl_with_adapter.py \
+python milestone/05_run_gtsrb_qwen3vl_with_adapter.py \
   --eval_jsonl artifacts/gtsrb_test_120.jsonl \
   --out_preds artifacts/gtsrb_preds_lora_small.jsonl \
   --adapter_dir artifacts/gtsrb_qwen3vl_lora_small
 
-python 02_eval_gtsrb.py \
+python milestone/02_eval_gtsrb.py \
   --preds_jsonl artifacts/gtsrb_preds_lora_small.jsonl \
   --out_confusion_csv artifacts/gtsrb_confusion_lora_small.csv
 ```
@@ -179,7 +179,7 @@ python 02_eval_gtsrb.py \
 cd /sgl-workspace/intro2dl-proj/Road_sign_recognition_Qwen
 source .venv/bin/activate
 # 任选两张卡，例如 0 和 1
-CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 04_train_gtsrb_lora_full.py \
+CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 milestone/04_train_gtsrb_lora_full.py \
   --per_device_train_batch_size 2 \
   --gradient_accumulation_steps 1
 ```
@@ -187,7 +187,7 @@ CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 04_train_gtsrb_lora_full.py
 **单卡加快速度（例如单张 H200）：**
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python 04_train_gtsrb_lora_full.py \
+CUDA_VISIBLE_DEVICES=0 python milestone/04_train_gtsrb_lora_full.py \
   --per_device_train_batch_size 4 \
   --gradient_accumulation_steps 1 \
   --no_gradient_checkpointing

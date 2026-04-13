@@ -6,9 +6,10 @@ import random
 from collections import defaultdict
 from pathlib import Path
 
-TRAIN_ROOT = Path("datasets/gtsrb/train")
-OUT_TRAIN = Path("artifacts/gtsrb_train_small.jsonl")
-OUT_VAL = Path("artifacts/gtsrb_val_small.jsonl")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+TRAIN_ROOT = REPO_ROOT / "datasets/gtsrb/train"
+OUT_TRAIN = REPO_ROOT / "artifacts/gtsrb_train_small.jsonl"
+OUT_VAL = REPO_ROOT / "artifacts/gtsrb_val_small.jsonl"
 
 TRAIN_PER_CLASS = 10
 VAL_PER_CLASS = 5

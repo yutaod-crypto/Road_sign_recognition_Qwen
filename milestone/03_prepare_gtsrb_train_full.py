@@ -4,9 +4,10 @@ import random
 from collections import defaultdict
 from pathlib import Path
 
-TRAIN_ROOT = Path("datasets/gtsrb/train")
-OUT_TRAIN = Path("artifacts/gtsrb_train_full.jsonl")
-OUT_VAL = Path("artifacts/gtsrb_val_full.jsonl")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+TRAIN_ROOT = REPO_ROOT / "datasets/gtsrb/train"
+OUT_TRAIN = REPO_ROOT / "artifacts/gtsrb_train_full.jsonl"
+OUT_VAL = REPO_ROOT / "artifacts/gtsrb_val_full.jsonl"
 
 VAL_RATIO = 0.1
 SEED = 42

@@ -1,4 +1,19 @@
 # Road_sign_recognition_Qwen
+
+## Repository layout
+
+| Location | Purpose |
+|----------|---------|
+| **`milestone/`** | Milestone scripts: GTSRB prep, Qwen3-VL baseline, LoRA train/eval (`00_*`–`05_*`, `debug_load_qwen3vl.py`). See `milestone/RUN_RESULTS.md` for a sample run log. |
+| **Repo root** | Final project code (e.g. **knowledge distillation** 32B→2B): add new entrypoints here; shared `datasets/` and `artifacts/` stay at root. |
+| **`datasets/`**, **`artifacts/`** | Data and generated outputs (often gitignored); paths resolve from repo root. Milestone scripts use `REPO_ROOT` so you can run them from any working directory. |
+
+Run milestone steps with:
+
+`python milestone/<script>.py` (optional args unchanged; defaults point at root `artifacts/`).
+
+---
+
 Here is the **entire README as one continuous write-up in the same style you showed**. You can copy and paste it **directly into GitHub**.
 
 ---
@@ -114,10 +129,16 @@ pip install torch transformers datasets accelerate peft pillow tqdm numpy pandas
 
 The baseline evaluation runs the pretrained **Qwen3-VL model** without any additional training.
 
+If you do not yet have the stratified test list, generate it first:
+
+```
+python milestone/00_prepare_gtsrb_grouped.py
+```
+
 Run the baseline inference:
 
 ```
-python 01_run_gtsrb_qwen3vl.py \
+python milestone/01_run_gtsrb_qwen3vl.py \
 --eval_jsonl artifacts/gtsrb_test_120.jsonl \
 --out_preds artifacts/gtsrb_preds_baseline.jsonl
 ```
@@ -127,7 +148,7 @@ This produces predictions for a fixed test subset of images.
 Evaluate the predictions using:
 
 ```
-python 02_eval_gtsrb.py \
+python milestone/02_eval_gtsrb.py \
 --preds_jsonl artifacts/gtsrb_preds_baseline.jsonl
 ```
 
@@ -144,7 +165,7 @@ This version trains on a small subset of the dataset (approximately 200 images).
 Prepare the small dataset:
 
 ```
-python 03_prepare_gtsrb_train_small.py
+python milestone/03_prepare_gtsrb_train_small.py
 ```
 
 This step generates:
@@ -157,7 +178,7 @@ artifacts/gtsrb_val_small.jsonl
 Train the LoRA adapter:
 
 ```
-python 04_train_gtsrb_qlora_small.py
+python milestone/04_train_gtsrb_qlora_small.py
 ```
 
 The trained adapter will be saved to:
@@ -169,7 +190,7 @@ artifacts/gtsrb_qwen3vl_lora_small
 Run inference with the trained adapter:
 
 ```
-python 05_run_gtsrb_qwen3vl_with_adapter.py \
+python milestone/05_run_gtsrb_qwen3vl_with_adapter.py \
 --eval_jsonl artifacts/gtsrb_test_120.jsonl \
 --out_preds artifacts/gtsrb_preds_lora_small.jsonl \
 --adapter_dir artifacts/gtsrb_qwen3vl_lora_small
@@ -186,7 +207,7 @@ After verifying that the pipeline works correctly, the LoRA adapter can be train
 Prepare the full training dataset:
 
 ```
-python 03_prepare_gtsrb_train_full.py
+python milestone/03_prepare_gtsrb_train_full.py
 ```
 
 This generates:
@@ -199,7 +220,7 @@ artifacts/gtsrb_val_full.jsonl
 Train the LoRA adapter on the full dataset:
 
 ```
-python 04_train_gtsrb_lora_full.py
+python milestone/04_train_gtsrb_lora_full.py
 ```
 
 The trained adapter will be saved to:
@@ -211,7 +232,7 @@ artifacts/gtsrb_qwen3vl_lora_full
 Run inference with the trained model:
 
 ```
-python 05_run_gtsrb_qwen3vl_with_adapter.py \
+python milestone/05_run_gtsrb_qwen3vl_with_adapter.py \
 --eval_jsonl artifacts/gtsrb_test_120.jsonl \
 --out_preds artifacts/gtsrb_preds_lora_full.jsonl \
 --adapter_dir artifacts/gtsrb_qwen3vl_lora_full
@@ -224,7 +245,7 @@ python 05_run_gtsrb_qwen3vl_with_adapter.py \
 Evaluate the predictions from the fine-tuned model using:
 
 ```
-python 02_eval_gtsrb.py \
+python milestone/02_eval_gtsrb.py \
 --preds_jsonl artifacts/gtsrb_preds_lora_full.jsonl
 ```
 

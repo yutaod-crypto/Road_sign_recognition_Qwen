@@ -1,7 +1,8 @@
-# 04_train_gtsrb_qlora_small.py
-
+import argparse
 import json
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List
 
 import torch
@@ -14,7 +15,9 @@ from transformers import (
     TrainingArguments,
     Trainer,
 )
+from transformers.trainer_utils import get_last_checkpoint
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 LABELS = ["speed_limit", "stop", "yield", "no_entry", "warning", "direction"]
 
 
@@ -117,7 +120,6 @@ class GTSRBCollator:
         attention_mask = torch.stack([pad1d(x, 0) for x in attn_list])
         labels = torch.stack([pad1d(x, -100) for x in labels_list])
         mm_token_type_ids = torch.stack([pad1d(x, 0) for x in mm_tok_list])
-
         pixel_values = torch.stack(pixel_values_list)
         image_grid_thw = torch.stack(image_grid_thw_list)
 
@@ -131,11 +133,56 @@ class GTSRBCollator:
         }
 
 
+def parse_args():
+    p = argparse.ArgumentParser(description="Full GTSRB LoRA fine-tuning for Qwen3-VL")
+    p.add_argument(
+        "--per_device_train_batch_size",
+        type=int,
+        default=1,
+        help="must stay 1: each image yields different Qwen3-VL patch counts; cannot stack a micro-batch in this collator",
+    )
+    p.add_argument("--per_device_eval_batch_size", type=int, default=1)
+    p.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=-1,
+        help="default auto: 1 if WORLD_SIZE>1 else 2 (keeps ~2 samples per optimizer step vs original1-GPU recipe)",
+    )
+    p.add_argument("--num_train_epochs", type=int, default=2)
+    p.add_argument("--bf16", action="store_true", help="train in bf16 (faster on H100/H200)")
+    p.add_argument("--fp16", action="store_true", help="force fp16 even if bf16 is available")
+    p.add_argument("--dataloader_num_workers", type=int, default=0)
+    p.add_argument("--no_gradient_checkpointing", action="store_true", help="disable checkpointing for speed if VRAM allows")
+    return p.parse_args()
+
+
 def main():
-    train_jsonl = "artifacts/gtsrb_train_small.jsonl"
-    val_jsonl = "artifacts/gtsrb_val_small.jsonl"
-    out_dir = "artifacts/gtsrb_qwen3vl_lora_small"
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+
+    args = parse_args()
+    if args.gradient_accumulation_steps < 0:
+        args.gradient_accumulation_steps = 1 if world_size > 1 else 2
+    if args.per_device_train_batch_size != 1 or args.per_device_eval_batch_size != 1:
+        raise ValueError(
+            "per_device_*_batch_size must be 1 for this multimodal collator (variable vision tokens per image). "
+            "Speed up with more GPUs (torchrun DDP) or bf16/TF32, not larger micro-batch."
+        )
+
+    train_jsonl = str(REPO_ROOT / "artifacts/gtsrb_train_full.jsonl")
+    val_jsonl = str(REPO_ROOT / "artifacts/gtsrb_val_full.jsonl")
+    out_dir = str(REPO_ROOT / "artifacts/gtsrb_qwen3vl_lora_full")
     model_id = "Qwen/Qwen3-VL-2B-Instruct"
+    if world_size > 1:
+        if local_rank < 0:
+            raise RuntimeError("Multi-GPU requires torchrun (LOCAL_RANK not set).")
+        torch.cuda.set_device(local_rank)
+
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
+    use_bf16 = args.bf16 or (not args.fp16 and torch.cuda.is_bf16_supported())
+    torch_dtype = torch.bfloat16 if use_bf16 else torch.float16
 
     print("Loading dataset...")
     ds = load_dataset("json", data_files={"train": train_jsonl, "val": val_jsonl})
@@ -143,14 +190,16 @@ def main():
     print("Loading processor...")
     processor = AutoProcessor.from_pretrained(model_id)
 
-    print("Loading model...")
-    model = Qwen3VLForConditionalGeneration.from_pretrained(
-        model_id,
-        torch_dtype=torch.float16,
-        device_map="auto",
-    )
+    print(f"Loading model... (world_size={world_size}, dtype={torch_dtype})")
+    load_kw: Dict[str, Any] = {"torch_dtype": torch_dtype}
+    if world_size <= 1:
+        load_kw["device_map"] = "auto"
+    model = Qwen3VLForConditionalGeneration.from_pretrained(model_id, **load_kw)
+    if world_size > 1:
+        model = model.to(torch.device(f"cuda:{local_rank}"))
 
-    model.gradient_checkpointing_enable()
+    if not args.no_gradient_checkpointing:
+        model.gradient_checkpointing_enable()
     model.config.use_cache = False
 
     lora_config = LoraConfig(
@@ -165,21 +214,28 @@ def main():
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
-    training_args = TrainingArguments(
+    ta_kwargs: Dict[str, Any] = dict(
         output_dir=out_dir,
-        num_train_epochs=2,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=2,
+        num_train_epochs=args.num_train_epochs,
+        per_device_train_batch_size=args.per_device_train_batch_size,
+        per_device_eval_batch_size=args.per_device_eval_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=1e-4,
-        logging_steps=1,
-        save_steps=20,
+        logging_steps=10,
+        save_steps=200,
         save_total_limit=2,
-        fp16=True,
-        bf16=False,
-        dataloader_num_workers=0,
+        fp16=not use_bf16,
+        bf16=use_bf16,
+        dataloader_num_workers=args.dataloader_num_workers,
+        dataloader_pin_memory=True,
         report_to="none",
         remove_unused_columns=False,
     )
+    #仅多进程 DDP 时设置，否则 accelerate 会走分布式分支导致单卡报错
+    if world_size > 1:
+        ta_kwargs["ddp_find_unused_parameters"] = False
+        ta_kwargs["ddp_backend"] = "nccl"
+    training_args = TrainingArguments(**ta_kwargs)
 
     collator = GTSRBCollator(
         processor=processor,
@@ -195,12 +251,16 @@ def main():
         data_collator=collator,
     )
 
-    print("Starting training...")
-    trainer.train()
+    resume_ckpt = get_last_checkpoint(out_dir)
+    if resume_ckpt:
+        print(f"Resuming from checkpoint: {resume_ckpt}")
+    else:
+        print("Starting training from scratch...")
+    trainer.train(resume_from_checkpoint=resume_ckpt)
     trainer.save_model(out_dir)
     processor.save_pretrained(out_dir)
-    print(f"Saved adapter to: {out_dir}")
 
+    print(f"Saved adapter to: {out_dir}")
 
 if __name__ == "__main__":
     main()

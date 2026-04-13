@@ -3,9 +3,10 @@ import json
 import random
 from pathlib import Path
 
-CSV_PATH = Path("datasets/gtsrb/GT-final_test.csv")
-IMAGE_DIR = Path("datasets/gtsrb/test_images")
-OUT_JSONL = Path("artifacts/gtsrb_test_120.jsonl")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CSV_PATH = REPO_ROOT / "datasets/gtsrb/GT-final_test.csv"
+IMAGE_DIR = REPO_ROOT / "datasets/gtsrb/test_images"
+OUT_JSONL = REPO_ROOT / "artifacts/gtsrb_test_120.jsonl"
 
 SAMPLE_SIZE = 120
 SEED = 42
