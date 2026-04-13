@@ -28,9 +28,6 @@ models/
 hf_cache/
 huggingface/
 
-# --- Local experiment notes (regenerate after runs) ---
-RUN_RESULTS.md
-
 # --- Secrets & local env ---
 .env
 .env.*
